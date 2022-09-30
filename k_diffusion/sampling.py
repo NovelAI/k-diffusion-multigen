@@ -48,11 +48,12 @@ def get_ancestral_step(sigma_from, sigma_to):
 
 
 def generate_randoms(x, seed, steps):
-    noise_tensors = [torch.randn_like(x) for _ in range(steps)]
+    noise_tensors = [torch.ones_like(x) for _ in range(steps)]
+    gen = torch.Generator(device=x.device)
     for i in range(x.shape[0]):
-        torch.manual_seed(seed + i)
+        gen.manual_seed(seed+i + 31337)
         for s in range(steps):
-            noise_tensors[s][i] = torch.randn_like(x[i])
+            noise_tensors[s][i] = torch.randn(x.shape[1:], generator=gen, device=x.device).to(x.device).to(x.dtype)
     return noise_tensors
     
 
@@ -94,8 +95,7 @@ def sample_euler_ancestral(model, x, sigmas, seed, extra_args=None, callback=Non
         # Euler method
         dt = sigma_down - sigmas[i]
         x = x + d * dt
-        randn = rand_tensors[i]
-        x = x + randn * sigma_up
+        x = x + rand_tensors[i] * sigma_up
     return x
 
 
