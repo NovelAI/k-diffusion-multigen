@@ -47,14 +47,24 @@ def get_ancestral_step(sigma_from, sigma_to):
     return sigma_down, sigma_up
 
 
+def generate_randoms(x, seed, steps):
+    noise_tensors = [torch.randn_like(x) for _ in range(steps)]
+    for i in range(x.shape[0]):
+        torch.manual_seed(seed + i)
+        for s in range(steps):
+            noise_tensors[s][i] = torch.randn_like(x[i])
+    return noise_tensors
+    
+
 @torch.no_grad()
-def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
+def sample_euler(model, x, sigmas, seed, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
     """Implements Algorithm 2 (Euler steps) from Karras et al. (2022)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
+    rand_tensors = generate_randoms(x, seed, len(sigmas) - 1)
     for i in trange(len(sigmas) - 1, disable=disable):
         gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
+        eps = rand_tensors[i] * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
             x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
@@ -68,32 +78,36 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
     return x
 
 
+
 @torch.no_grad()
-def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, disable=None):
+def sample_euler_ancestral(model, x, sigmas, seed, extra_args=None, callback=None, disable=None):
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
+    rand_tensors = generate_randoms(x, seed, len(sigmas) - 1)
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1])
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        d = to_d(x, sigmas[i], denoised)
+        d = to_d(x, sigmas[i], denoised) # check
         # Euler method
         dt = sigma_down - sigmas[i]
         x = x + d * dt
-        x = x + torch.randn_like(x) * sigma_up
+        randn = rand_tensors[i]
+        x = x + randn * sigma_up
     return x
 
 
 @torch.no_grad()
-def sample_heun(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
+def sample_heun(model, x, sigmas, seed, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
     """Implements Algorithm 2 (Heun steps) from Karras et al. (2022)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
+    rand_tensors = generate_randoms(x, seed, len(sigmas) - 1)
     for i in trange(len(sigmas) - 1, disable=disable):
         gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
+        eps = rand_tensors[i] * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
             x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
@@ -116,13 +130,14 @@ def sample_heun(model, x, sigmas, extra_args=None, callback=None, disable=None, 
 
 
 @torch.no_grad()
-def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
+def sample_dpm_2(model, x, sigmas, seed, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
     """A sampler inspired by DPM-Solver-2 and Algorithm 2 from Karras et al. (2022)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
+    rand_tensors = generate_randoms(x, seed, len(sigmas) - 1)
     for i in trange(len(sigmas) - 1, disable=disable):
         gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
+        eps = rand_tensors[i] * s_noise
         sigma_hat = sigmas[i] * (gamma + 1)
         if gamma > 0:
             x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
@@ -142,10 +157,11 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
 
 
 @torch.no_grad()
-def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, disable=None):
+def sample_dpm_2_ancestral(model, x, sigmas, seed, extra_args=None, callback=None, disable=None):
     """Ancestral sampling with DPM-Solver inspired second-order steps."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
+    rand_tensors = generate_randoms(x, seed, len(sigmas) - 1)
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1])
@@ -160,7 +176,7 @@ def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
         d_2 = to_d(x_2, sigma_mid, denoised_2)
         x = x + d_2 * dt_2
-        x = x + torch.randn_like(x) * sigma_up
+        x = x + rand_tensors[i] * sigma_up
     return x
 
 
