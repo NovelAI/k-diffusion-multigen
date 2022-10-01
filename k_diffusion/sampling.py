@@ -194,7 +194,7 @@ def linear_multistep_coeff(order, t, i, j):
 
 
 @torch.no_grad()
-def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, order=4):
+def sample_lms(model, x, sigmas, seed, extra_args=None, callback=None, disable=None, order=4):
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     ds = []
