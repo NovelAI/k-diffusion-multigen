@@ -60,6 +60,7 @@ def generate_randoms(x, seed, steps):
         for s in range(steps):
             noise_tensors[s][i] = torch.randn(x.shape[1:], generator=gen, device=x.device).to(x.device).to(x.dtype)
     return noise_tensors
+        
 
 @torch.no_grad()
 def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1., seed=None):
@@ -334,7 +335,8 @@ class DPMSolver(nn.Module):
         x_3 = x - self.sigma(t_next) * h.expm1() * eps - self.sigma(t_next) / r2 * (h.expm1() / h - 1) * (eps_r2 - eps)
         return x_3, eps_cache
 
-    def dpm_solver_fast(self, x, t_start, t_end, nfe, eta=0., s_noise=1.):
+    def dpm_solver_fast(self, x, t_start, t_end, nfe, eta=0., s_noise=1., seed=None):
+        generator = torch.Generator(device=x.device)
         if not t_end > t_start and eta:
             raise ValueError('eta must be 0 for reverse sampling')
 
@@ -368,11 +370,19 @@ class DPMSolver(nn.Module):
             else:
                 x, eps_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=eps_cache)
 
-            x = x + su * s_noise * torch.randn_like(x)
+            sampled_randoms = []
+            for batch_item in range(x.shape[0]):
+                generator.manual_seed(seed + 31337 + batch_item + i)
+                sampled_random = torch.rand(x.shape[1:], device=x.device, generator=generator)
+                sampled_randoms.append(sampled_random)
+            sampled_randoms = torch.stack(sampled_randoms)
+
+            x = x + su * s_noise * sampled_randoms
 
         return x
 
-    def dpm_solver_adaptive(self, x, t_start, t_end, order=3, rtol=0.05, atol=0.0078, h_init=0.05, pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81, eta=0., s_noise=1.):
+    def dpm_solver_adaptive(self, x, t_start, t_end, order=3, rtol=0.05, atol=0.0078, h_init=0.05, pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81, eta=0., s_noise=1., seed=None):
+        generator = torch.Generator(device=x.device)
         if order not in {2, 3}:
             raise ValueError('order should be 2 or 3')
         forward = t_end > t_start
@@ -410,8 +420,14 @@ class DPMSolver(nn.Module):
             error = torch.linalg.norm((x_low - x_high) / delta) / x.numel() ** 0.5
             accept = pid.propose_step(error)
             if accept:
+                sampled_randoms = []
+                for batch_item in range(x_high.shape[0]):
+                    generator.manual_seed(seed + 31337 + batch_item + info['steps'])
+                    sampled_random = torch.rand(x_high.shape[1:], device=x.device, generator=generator)
+                    sampled_randoms.append(sampled_random)
+                sampled_randoms = torch.stack(sampled_randoms)
                 x_prev = x_low
-                x = x_high + su * s_noise * torch.randn_like(x_high)
+                x = x_high + su * s_noise * sampled_randoms
                 s = t
                 info['n_accept'] += 1
             else:
@@ -426,7 +442,7 @@ class DPMSolver(nn.Module):
 
 
 @torch.no_grad()
-def sample_dpm_fast(model, x, sigma_min, sigma_max, n, extra_args=None, callback=None, disable=None, eta=0., s_noise=1.):
+def sample_dpm_fast(model, x, sigma_min, sigma_max, n, extra_args=None, callback=None, disable=None, eta=0., s_noise=1., seed=None):
     """DPM-Solver-Fast (fixed step size). See https://arxiv.org/abs/2206.00927."""
     if sigma_min <= 0 or sigma_max <= 0:
         raise ValueError('sigma_min and sigma_max must not be 0')
@@ -434,11 +450,11 @@ def sample_dpm_fast(model, x, sigma_min, sigma_max, n, extra_args=None, callback
         dpm_solver = DPMSolver(model, extra_args, eps_callback=pbar.update)
         if callback is not None:
             dpm_solver.info_callback = lambda info: callback({'sigma': dpm_solver.sigma(info['t']), 'sigma_hat': dpm_solver.sigma(info['t_up']), **info})
-        return dpm_solver.dpm_solver_fast(x, dpm_solver.t(torch.tensor(sigma_max)), dpm_solver.t(torch.tensor(sigma_min)), n, eta, s_noise)
+        return dpm_solver.dpm_solver_fast(x, dpm_solver.t(torch.tensor(sigma_max)), dpm_solver.t(torch.tensor(sigma_min)), n, eta, s_noise, seed=seed)
 
 
 @torch.no_grad()
-def sample_dpm_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callback=None, disable=None, order=3, rtol=0.05, atol=0.0078, h_init=0.05, pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81, eta=0., s_noise=1., return_info=False):
+def sample_dpm_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callback=None, disable=None, order=3, rtol=0.05, atol=0.0078, h_init=0.05, pcoeff=0., icoeff=1., dcoeff=0., accept_safety=0.81, eta=0., s_noise=1., return_info=False, seed=None):
     """DPM-Solver-12 and 23 (adaptive step size). See https://arxiv.org/abs/2206.00927."""
     if sigma_min <= 0 or sigma_max <= 0:
         raise ValueError('sigma_min and sigma_max must not be 0')
@@ -446,7 +462,7 @@ def sample_dpm_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callbac
         dpm_solver = DPMSolver(model, extra_args, eps_callback=pbar.update)
         if callback is not None:
             dpm_solver.info_callback = lambda info: callback({'sigma': dpm_solver.sigma(info['t']), 'sigma_hat': dpm_solver.sigma(info['t_up']), **info})
-        x, info = dpm_solver.dpm_solver_adaptive(x, dpm_solver.t(torch.tensor(sigma_max)), dpm_solver.t(torch.tensor(sigma_min)), order, rtol, atol, h_init, pcoeff, icoeff, dcoeff, accept_safety, eta, s_noise)
+        x, info = dpm_solver.dpm_solver_adaptive(x, dpm_solver.t(torch.tensor(sigma_max)), dpm_solver.t(torch.tensor(sigma_min)), order, rtol, atol, h_init, pcoeff, icoeff, dcoeff, accept_safety, eta, s_noise, seed=seed)
     if return_info:
         return x, info
     return x
