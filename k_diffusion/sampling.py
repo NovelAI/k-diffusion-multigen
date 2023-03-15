@@ -555,7 +555,7 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
     """DPM-Solver++ (stochastic)."""
     sigma_min = sigmas[sigmas > 0]
     if sigma_min.numel() == 0:
-        sigma_min = 0
+        sigma_min = sigmas.min()
     else:
         sigma_min = sigma_min.min()
     sigma_max = sigmas.max()
